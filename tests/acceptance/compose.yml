@@ -1,0 +1,48 @@
+name: checkwarranty-glpi-cli-acceptance
+services:
+  glpi10:
+    image: glpi/glpi:10.0.28
+    ports: ["127.0.0.1:18010:80"]
+    environment:
+      GLPI_DB_HOST: glpi10-db
+      GLPI_DB_NAME: glpi
+      GLPI_DB_USER: glpi
+      GLPI_DB_PASSWORD: acceptance-only
+      GLPI_SKIP_AUTOUPDATE: "true"
+      GLPI_SKIP_AUTOINSTALL: "true"
+    volumes:
+      - .:/opt/cw-testing:ro
+    depends_on: [glpi10-db, mock]
+  glpi10-db:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: acceptance-only-root
+      MARIADB_DATABASE: glpi
+      MARIADB_USER: glpi
+      MARIADB_PASSWORD: acceptance-only
+
+  glpi11:
+    image: glpi/glpi:11.0.12
+    ports: ["127.0.0.1:18011:80"]
+    environment:
+      GLPI_DB_HOST: glpi11-db
+      GLPI_DB_NAME: glpi
+      GLPI_DB_USER: glpi
+      GLPI_DB_PASSWORD: acceptance-only
+      GLPI_SKIP_AUTOUPDATE: "true"
+      GLPI_SKIP_AUTOINSTALL: "true"
+    volumes:
+      - .:/opt/cw-testing:ro
+    depends_on: [glpi11-db, mock]
+  glpi11-db:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: acceptance-only-root
+      MARIADB_DATABASE: glpi
+      MARIADB_USER: glpi
+      MARIADB_PASSWORD: acceptance-only
+  mock:
+    image: python:3.11-alpine
+    command: ["python", "/mock_api.py"]
+    volumes:
+      - ./mock_api.py:/mock_api.py:ro
