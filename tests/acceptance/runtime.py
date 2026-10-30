@@ -18,8 +18,11 @@ args=argparse.Namespace(dry_run=False,plan=True,limit=100,force=True,recheck_day
 sync.run_sync(args)
 assert not REQUESTS
 args.plan=False
+args.state_file = "/tmp/cw-glpi-cursor-"+major+".json"
+args.limit = 2
 with patch.object(sync.time,"sleep"):
-    sync.run_sync(args)
+    for _ in range(3):
+        sync.run_sync(args)
 client=sync.GlpiClient(os.environ["GLPI_URL"],auth["app_token"],auth["user_token"])
 assert client.init_session()
 for kind,id_ in auth["ids"].items():

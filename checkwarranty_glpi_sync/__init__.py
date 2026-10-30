@@ -7,6 +7,9 @@ Zero external dependencies required (uses standard library urllib/json).
 
 import os
 import calendar
+import hashlib
+import tempfile
+from pathlib import Path
 import sys
 import argparse
 import logging
@@ -158,14 +161,13 @@ class GlpiClient:
         body = json.dumps(data).encode("utf-8") if data is not None else None
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.build_opener(_NoRedirect()).open(req, timeout=30) as resp:
                 res_body = resp.read().decode("utf-8")
                 return json.loads(res_body) if res_body else {}
         except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8") if e.fp else ""
             if e.code == 404:
                 return None
-            logger.error(f"GLPI HTTP {e.code} error on {method} {url}: {err_body}")
+            logger.error(f"GLPI HTTP {e.code} error on {method} {url}")
             raise
         except urllib.error.URLError as e:
             logger.error(f"GLPI connection error: {e}")
@@ -200,10 +202,10 @@ class GlpiClient:
         except Exception:
             pass
 
-    def get_computers(self, total_limit: int = 100, page_size: int = 50) -> List[Dict[str, Any]]:
+    def get_computers(self, total_limit: int = 100, page_size: int = 50, start_offset: int = 0) -> List[Dict[str, Any]]:
         """Fetch active Computer assets from GLPI with pagination."""
         all_computers: List[Dict[str, Any]] = []
-        offset = 0
+        offset = start_offset
 
         while len(all_computers) < total_limit:
             fetch_count = min(page_size, total_limit - len(all_computers))
@@ -270,11 +272,20 @@ class GlpiClient:
                 return False
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class CheckWarrantyClient:
     """Handles communication with the CheckWarranty B2B REST API using urllib."""
 
     def __init__(self, base_url: str, api_key: str):
         self.base_url = (base_url or "").strip().rstrip("/")
+        parts = urllib.parse.urlsplit(self.base_url)
+        local_test = parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1")
+        if not parts.hostname or parts.username or parts.password or parts.query or parts.fragment or (parts.scheme != "https" and not local_test):
+            raise ValueError("CheckWarranty API URL must use HTTPS (HTTP is allowed only on loopback for tests)")
         self.headers = {
             "X-API-Key": api_key,
             "Accept": "application/json",
@@ -291,17 +302,16 @@ class CheckWarrantyClient:
 
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=35) as resp:
+            with urllib.request.build_opener(_NoRedirect()).open(req, timeout=35) as resp:
                 res_body = resp.read().decode("utf-8")
                 return json.loads(res_body) if res_body else {}
         except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8") if e.fp else ""
             if e.code == 404:
                 return None
             if e.code == 402:
                 logger.error("CheckWarranty credit balance exhausted (HTTP 402). Top up credits at checkwarranty.info/dashboard/billing")
                 sys.exit(2)
-            logger.warning(f"CheckWarranty HTTP {e.code} for {path}: {err_body}")
+            logger.warning(f"CheckWarranty HTTP {e.code} for {path}")
             return None
         except urllib.error.URLError as e:
             logger.error(f"CheckWarranty connection error: {e}")
@@ -410,7 +420,16 @@ def build_infocom_payload(warranty, specs, existing, sync_specs=True):
         parts.extend(key.upper() + "=" + value.replace("\n", " ") for key, value in specs.items())
     if parts:
         manual = re.sub(r"(?:\n)?\[CheckWarranty\][^\n]*", "", existing.get("warranty_info") or "").rstrip()
-        note = "[CheckWarranty] " + "; ".join(parts)
+        previous = re.search(r"\[CheckWarranty\] ([^\n]*)", existing.get("warranty_info") or "")
+        merged = {}
+        for part in (previous.group(1).split("; ") if previous else []) + parts:
+            if "=" in part:
+                key, value = part.split("=", 1)
+                if key in {"expiry", "start", "status", "SLA", "CPU", "RAM", "STORAGE", "DISPLAY", "MODEL", "PRODUCT_NUMBER", "DESCRIPTION"} and value:
+                    merged[key] = value
+        if "expiry" in merged:
+            merged = {"expiry": merged.pop("expiry"), **merged}
+        note = "[CheckWarranty] " + "; ".join(key + "=" + value for key, value in merged.items())
         available = 255 - len(manual) - (1 if manual else 0)
         essential = "[CheckWarranty] " + ("expiry=" + end if end else parts[0])
         if available >= len(essential):
@@ -438,6 +457,37 @@ def infocom_expiration(infocom):
         return None
 
 
+
+def read_cursor(args, target):
+    """Cursor is scoped to the target URL and contains no credentials or results."""
+    filename = getattr(args, "state_file", None)
+    if not filename:
+        return 0
+    try:
+        state = json.loads(Path(filename).expanduser().read_text())
+        if not isinstance(state, dict):
+            return 0
+        return max(0, int(state.get("offset", 0))) if state.get("target") == hashlib.sha256(target.encode()).hexdigest() else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def write_cursor(args, target, offset):
+    filename = getattr(args, "state_file", None)
+    if not filename or args.dry_run or getattr(args, "plan", False):
+        return
+    path = Path(filename).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".cw-cursor-")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump({"target": hashlib.sha256(target.encode()).hexdigest(), "offset": offset}, stream)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def run_sync(args: argparse.Namespace) -> None:
     glpi_url = os.getenv("GLPI_URL")
     glpi_app_token = os.getenv("GLPI_APP_TOKEN")
@@ -448,7 +498,7 @@ def run_sync(args: argparse.Namespace) -> None:
     if not glpi_url or not glpi_app_token or not glpi_user_token:
         logger.error("Missing GLPI_URL, GLPI_APP_TOKEN, or GLPI_USER_TOKEN in environment.")
         sys.exit(1)
-    if not cw_key:
+    if not cw_key and not getattr(args, "plan", False):
         logger.error("Missing CHECKWARRANTY_API_KEY in environment variables.")
         sys.exit(1)
 
@@ -464,7 +514,8 @@ def run_sync(args: argparse.Namespace) -> None:
             f"recheck_days={args.recheck_days})"
         )
 
-        computers = glpi.get_computers(total_limit=args.limit)
+        cursor = read_cursor(args, glpi_url)
+        computers = glpi.get_computers(total_limit=args.limit, start_offset=cursor)
         logger.info(f"Fetched {len(computers)} computers from GLPI.")
 
         stats = {"processed": 0, "updated": 0, "skipped": 0, "not_found": 0, "errors": 0}
@@ -532,6 +583,7 @@ def run_sync(args: argparse.Namespace) -> None:
                 logger.error(f" -> Failed to update GLPI Infocom for #{comp_id}")
                 stats["errors"] += 1
 
+        write_cursor(args, glpi_url, cursor + len(computers) if len(computers) == args.limit else 0)
         logger.info("=" * 60)
         logger.info(
             f"GLPI Sync Complete. Processed: {stats['processed']}, "
@@ -561,6 +613,7 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Enable verbose debug logging.")
 
     parser.add_argument("--plan", action="store_true", help="List assets needing lookup without calling CheckWarranty or writing changes.")
+    parser.add_argument("--state-file", default=os.environ.get("CHECKWARRANTY_STATE_FILE", str(Path.home() / ".local" / "state" / "checkwarranty" / "glpi.json")), help="Persistent cursor file; schedule one process per file.")
     args = parser.parse_args()
 
     if args.verbose:
