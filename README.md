@@ -130,9 +130,9 @@ python sync.py
 ## Credit Protection & Smart Caching
 
 To prevent unnecessary API credit consumption:
-* **Existing Infocom Protection:** Computers with an active warranty date in the future are skipped automatically.
+* **Existing Infocom Protection:** The connector reads an exact expiry marker or derives expiration from the native warranty start and calendar duration before applying the recheck threshold.
 * **Smart Renewal Buffer (`--recheck-days`):** Set `--recheck-days 30` in monthly cron jobs to only refresh records nearing expiration.
-* **Idempotency Keys:** Every request carries a unique UUID idempotency key to prevent double-billing on network retries.
+* **Idempotency Keys:** Each lookup uses one idempotency key. New scheduled invocations create new keys; this is not a cross-run scan cache.
 
 ---
 
