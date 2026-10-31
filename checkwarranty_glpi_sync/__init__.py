@@ -216,7 +216,20 @@ class GlpiClient:
                 "is_deleted": 0,
                 "range": range_header,
             }
-            res = self._request("GET", "/Computer", params=params)
+            try:
+                res = self._request("GET", "/Computer", params=params)
+            except urllib.error.HTTPError as error:
+                if error.code != 400:
+                    raise
+                # A saved cursor can outlive deleted assets or reduced rights.
+                # Only GLPI's explicit end-of-range response ends pagination.
+                try:
+                    failure = json.loads(error.read(4096))
+                except (ValueError, UnicodeDecodeError):
+                    raise error
+                if isinstance(failure, list) and failure and failure[0] == "ERROR_RANGE_EXCEED_TOTAL":
+                    break
+                raise
             if not res or not isinstance(res, list):
                 break
 

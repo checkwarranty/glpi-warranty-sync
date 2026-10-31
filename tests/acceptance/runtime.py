@@ -36,5 +36,9 @@ for kind,id_ in auth["ids"].items():
     if kind=="NOTFOUND": assert row["warranty_info"]=="Manual note"
 client.kill_session()
 assert len(REQUESTS)==5
+sync.write_cursor(args, os.environ['GLPI_URL'], 999999)
+sync.run_sync(args)
+assert sync.read_cursor(args, os.environ['GLPI_URL']) == 0
+assert len(REQUESTS)==5
 server.shutdown()
 print("GLPI "+major+" REST CLI acceptance passed")

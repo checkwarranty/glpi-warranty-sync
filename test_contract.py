@@ -1,8 +1,25 @@
 import unittest
 from unittest.mock import patch
 import sync
+import io
+import urllib.error
 
 class ContractTests(unittest.TestCase):
+    def test_cursor_beyond_reduced_inventory_ends_page(self):
+        client = sync.GlpiClient('http://localhost', 'app', 'user')
+        error = urllib.error.HTTPError('http://localhost/Computer', 400, 'range', {},
+            io.BytesIO(b'["ERROR_RANGE_EXCEED_TOTAL", "range exceeds total"]'))
+        with patch.object(client, '_request', side_effect=error):
+            self.assertEqual(client.get_computers(start_offset=100), [])
+
+    def test_other_bad_requests_are_not_treated_as_empty_inventory(self):
+        client = sync.GlpiClient('http://localhost', 'app', 'user')
+        error = urllib.error.HTTPError('http://localhost/Computer', 400, 'invalid', {},
+            io.BytesIO(b'["ERROR_BAD_ARRAY", "invalid query"]'))
+        with patch.object(client, '_request', side_effect=error):
+            with self.assertRaises(urllib.error.HTTPError):
+                client.get_computers(start_offset=100)
+
     def test_real_api_specs_only_result(self):
         warranty, specs = sync.extract_result({"status": "completed", "warranty": {"status": "unknown", "details": {"processor": "Xeon", "memory": "16 GB"}}})
         self.assertEqual(specs, {"cpu": "Xeon", "ram": "16 GB"})
